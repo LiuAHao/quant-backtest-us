@@ -42,11 +42,11 @@ ENV/
 
 # Logs
 *.log
-logs/
+logs/*
 !logs/.gitkeep
 
 # Data files (large binary files)
-data/
+data/*
 !data/.gitkeep
 
 # Backtest reports

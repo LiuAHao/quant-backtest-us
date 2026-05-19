@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -92,6 +93,55 @@ class DownloadUtilityTest(unittest.TestCase):
         self.assertEqual(len(result), 2)
         aapl = result[result["symbol"] == "AAPL"].iloc[0]
         self.assertEqual(aapl["close"], 11.0)
+
+    def test_successful_retry_removes_symbols_from_failed_checkpoint(self):
+        from scripts.data_download.download_us_daily import download_batches, load_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_path = root / "meta" / "checkpoint.json"
+            checkpoint_path.parent.mkdir()
+            checkpoint_path.write_text(
+                """
+                {
+                  "batches": [],
+                  "failed_symbols": ["AAPL", "MSFT"]
+                }
+                """,
+                encoding="utf-8",
+            )
+            rows = pd.DataFrame(
+                {
+                    "symbol": ["AAPL", "MSFT"],
+                    "date": ["2024-01-02", "2024-01-02"],
+                    "open": [10.0, 20.0],
+                    "high": [11.0, 21.0],
+                    "low": [9.0, 19.0],
+                    "close": [10.5, 20.5],
+                    "adj_close": [10.5, 20.5],
+                    "volume": [100, 200],
+                    "dividends": [0.0, 0.0],
+                    "stock_splits": [0.0, 0.0],
+                    "amount": [1050.0, 4100.0],
+                    "source": ["yfinance", "yfinance"],
+                    "updated_at": ["2026-05-20T00:00:00Z", "2026-05-20T00:00:00Z"],
+                }
+            )
+
+            with patch("scripts.data_download.download_us_daily.fetch_daily_bars", return_value=rows):
+                download_batches(
+                    symbols=["AAPL", "MSFT"],
+                    start="2024-01-02",
+                    end="2024-01-10",
+                    output_dir=root / "bars",
+                    checkpoint_path=checkpoint_path,
+                    batch_size=2,
+                    retries=0,
+                )
+
+            checkpoint = load_checkpoint(checkpoint_path)
+
+        self.assertEqual(checkpoint["failed_symbols"], [])
 
 
 class ValidationTest(unittest.TestCase):

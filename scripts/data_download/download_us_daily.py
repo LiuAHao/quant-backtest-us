@@ -154,6 +154,7 @@ def download_batches(
                 rows = fetch_daily_bars(batch, start=start, end=end, batch_threads=threads)
                 write_counts = write_partitioned_daily_bars(rows, output_dir)
                 total_rows += len(rows)
+                failed_symbols.difference_update(batch)
                 checkpoint.setdefault("batches", []).append(
                     {
                         "key": key,
@@ -165,6 +166,7 @@ def download_batches(
                         "completed_at": utc_now_iso(),
                     }
                 )
+                checkpoint["failed_symbols"] = sorted(failed_symbols)
                 save_checkpoint(checkpoint_path, checkpoint)
                 break
             except Exception as exc:  # noqa: BLE001 - CLI records source failures and continues.

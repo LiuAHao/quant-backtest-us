@@ -55,6 +55,12 @@ def batch_symbols(symbols: Iterable[str], batch_size: int) -> Iterator[list[str]
             yield batch
 
 
+def extract_downloaded_symbols(rows: pd.DataFrame) -> list[str]:
+    if rows is None or rows.empty or "symbol" not in rows:
+        return []
+    return normalize_symbols(rows["symbol"].dropna().astype(str).tolist())
+
+
 def merge_daily_bars(existing: pd.DataFrame, incoming: pd.DataFrame) -> pd.DataFrame:
     if existing is None or existing.empty:
         merged = incoming.copy()
@@ -142,10 +148,12 @@ def download_batches(
     }
     failed_symbols: set[str] = set(checkpoint.get("failed_symbols", []))
     total_rows = 0
+    skipped_batches = 0
 
     for index, batch in enumerate(batch_symbols(symbols, batch_size), start=1):
         key = "|".join(batch)
         if key in completed_keys:
+            skipped_batches += 1
             continue
 
         last_error = ""
@@ -154,21 +162,32 @@ def download_batches(
                 rows = fetch_daily_bars(batch, start=start, end=end, batch_threads=threads)
                 write_counts = write_partitioned_daily_bars(rows, output_dir)
                 total_rows += len(rows)
-                failed_symbols.difference_update(batch)
+                downloaded_symbols = extract_downloaded_symbols(rows)
+                missing_symbols = [symbol for symbol in batch if symbol not in set(downloaded_symbols)]
+                failed_symbols.difference_update(downloaded_symbols)
+                failed_symbols.update(missing_symbols)
                 checkpoint.setdefault("batches", []).append(
                     {
                         "key": key,
                         "symbols": batch,
                         "batch_index": index,
-                        "status": "success",
+                        "status": "success" if not missing_symbols else "partial",
                         "rows": len(rows),
+                        "downloaded_symbols": downloaded_symbols,
+                        "missing_symbols": missing_symbols,
                         "partitions": write_counts,
                         "completed_at": utc_now_iso(),
                     }
                 )
                 checkpoint["failed_symbols"] = sorted(failed_symbols)
                 save_checkpoint(checkpoint_path, checkpoint)
-                break
+                if not missing_symbols:
+                    break
+                last_error = f"Missing symbols: {', '.join(missing_symbols)}"
+                if attempt <= retries:
+                    time.sleep(retry_sleep)
+                else:
+                    break
             except Exception as exc:  # noqa: BLE001 - CLI records source failures and continues.
                 last_error = str(exc)
                 if attempt <= retries:
@@ -195,6 +214,7 @@ def download_batches(
         "output_dir": str(output_dir),
         "batch_size": batch_size,
         "rows_downloaded_this_run": total_rows,
+        "skipped_batches": skipped_batches,
         "completed_at": utc_now_iso(),
     }
     save_checkpoint(checkpoint_path, checkpoint)
@@ -245,10 +265,19 @@ def main() -> int:
         threads=parse_threads(args.threads),
     )
     last_run = checkpoint["last_run"]
-    print(
-        f"Downloaded {last_run['rows_downloaded_this_run']} rows into {last_run['output_dir']} "
-        f"with {len(checkpoint.get('failed_symbols', []))} failed symbols."
-    )
+    failed_symbol_count = len(checkpoint.get("failed_symbols", []))
+    skipped_batches = int(last_run.get("skipped_batches", 0))
+    if last_run["rows_downloaded_this_run"] == 0 and skipped_batches > 0 and failed_symbol_count == 0:
+        print(
+            f"No new rows downloaded. Skipped {skipped_batches} completed batch"
+            f"{'' if skipped_batches == 1 else 'es'} from checkpoint at {args.checkpoint}."
+        )
+    else:
+        print(
+            f"Downloaded {last_run['rows_downloaded_this_run']} rows into {last_run['output_dir']} "
+            f"with {failed_symbol_count} failed symbols and {skipped_batches} skipped batch"
+            f"{'' if skipped_batches == 1 else 'es'}."
+        )
     return 0
 
 

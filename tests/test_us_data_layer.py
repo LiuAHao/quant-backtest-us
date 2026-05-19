@@ -143,6 +143,127 @@ class DownloadUtilityTest(unittest.TestCase):
 
         self.assertEqual(checkpoint["failed_symbols"], [])
 
+    def test_skipped_completed_batch_is_reported(self):
+        from scripts.data_download.download_us_daily import download_batches
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_path = root / "meta" / "checkpoint.json"
+            checkpoint_path.parent.mkdir()
+            checkpoint_path.write_text(
+                """
+                {
+                  "batches": [
+                    {
+                      "key": "AAPL|MSFT",
+                      "status": "success"
+                    }
+                  ],
+                  "failed_symbols": []
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            result = download_batches(
+                symbols=["AAPL", "MSFT"],
+                start="2024-01-02",
+                end="2024-01-10",
+                output_dir=root / "bars",
+                checkpoint_path=checkpoint_path,
+                batch_size=2,
+                retries=0,
+            )
+
+        self.assertEqual(result["last_run"]["rows_downloaded_this_run"], 0)
+        self.assertEqual(result["last_run"]["skipped_batches"], 1)
+
+    def test_partial_batch_keeps_missing_symbol_retryable(self):
+        from scripts.data_download.download_us_daily import download_batches, load_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_path = root / "meta" / "checkpoint.json"
+            rows = pd.DataFrame(
+                {
+                    "symbol": ["AAPL"],
+                    "date": ["2024-01-02"],
+                    "open": [10.0],
+                    "high": [11.0],
+                    "low": [9.0],
+                    "close": [10.5],
+                    "adj_close": [10.5],
+                    "volume": [100],
+                    "dividends": [0.0],
+                    "stock_splits": [0.0],
+                    "amount": [1050.0],
+                    "source": ["yfinance"],
+                    "updated_at": ["2026-05-20T00:00:00Z"],
+                }
+            )
+
+            with patch("scripts.data_download.download_us_daily.fetch_daily_bars", return_value=rows):
+                download_batches(
+                    symbols=["AAPL", "META"],
+                    start="2024-01-02",
+                    end="2024-01-10",
+                    output_dir=root / "bars",
+                    checkpoint_path=checkpoint_path,
+                    batch_size=2,
+                    retries=0,
+                )
+
+            checkpoint = load_checkpoint(checkpoint_path)
+            saved = pd.read_parquet(root / "bars" / "year=2024" / "us_daily_bar.parquet")
+
+        self.assertEqual(checkpoint["failed_symbols"], ["META"])
+        self.assertEqual(checkpoint["batches"][0]["status"], "partial")
+        self.assertEqual(checkpoint["batches"][0]["downloaded_symbols"], ["AAPL"])
+        self.assertEqual(checkpoint["batches"][0]["missing_symbols"], ["META"])
+        self.assertEqual(saved["symbol"].tolist(), ["AAPL"])
+
+    def test_empty_batch_result_marks_all_symbols_missing(self):
+        from scripts.data_download.download_us_daily import download_batches, load_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_path = root / "meta" / "checkpoint.json"
+            rows = pd.DataFrame(
+                columns=[
+                    "symbol",
+                    "date",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "adj_close",
+                    "volume",
+                    "dividends",
+                    "stock_splits",
+                    "amount",
+                    "source",
+                    "updated_at",
+                ]
+            )
+
+            with patch("scripts.data_download.download_us_daily.fetch_daily_bars", return_value=rows):
+                download_batches(
+                    symbols=["AAPL", "META"],
+                    start="2024-01-02",
+                    end="2024-01-10",
+                    output_dir=root / "bars",
+                    checkpoint_path=checkpoint_path,
+                    batch_size=2,
+                    retries=0,
+                )
+
+            checkpoint = load_checkpoint(checkpoint_path)
+
+        self.assertEqual(checkpoint["failed_symbols"], ["AAPL", "META"])
+        self.assertEqual(checkpoint["batches"][0]["status"], "partial")
+        self.assertEqual(checkpoint["batches"][0]["downloaded_symbols"], [])
+        self.assertEqual(checkpoint["batches"][0]["missing_symbols"], ["AAPL", "META"])
+
 
 class ValidationTest(unittest.TestCase):
     def test_validates_required_columns_duplicates_and_price_ranges(self):

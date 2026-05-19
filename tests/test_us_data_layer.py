@@ -264,6 +264,107 @@ class DownloadUtilityTest(unittest.TestCase):
         self.assertEqual(checkpoint["batches"][0]["downloaded_symbols"], [])
         self.assertEqual(checkpoint["batches"][0]["missing_symbols"], ["AAPL", "META"])
 
+    def test_symbol_status_is_written_for_downloaded_and_missing_symbols(self):
+        from scripts.data_download.download_us_daily import download_batches, load_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_path = root / "meta" / "checkpoint.json"
+            rows = pd.DataFrame(
+                {
+                    "symbol": ["AAPL"],
+                    "date": ["2024-01-02"],
+                    "open": [10.0],
+                    "high": [11.0],
+                    "low": [9.0],
+                    "close": [10.5],
+                    "adj_close": [10.5],
+                    "volume": [100],
+                    "dividends": [0.0],
+                    "stock_splits": [0.0],
+                    "amount": [1050.0],
+                    "source": ["yfinance"],
+                    "updated_at": ["2026-05-20T00:00:00Z"],
+                }
+            )
+
+            with patch("scripts.data_download.download_us_daily.fetch_daily_bars", return_value=rows):
+                download_batches(
+                    symbols=["AAPL", "META"],
+                    start="2024-01-02",
+                    end="2024-01-10",
+                    output_dir=root / "bars",
+                    checkpoint_path=checkpoint_path,
+                    batch_size=2,
+                    retries=0,
+                )
+
+            checkpoint = load_checkpoint(checkpoint_path)
+
+        self.assertEqual(checkpoint["symbol_status"]["AAPL"]["status"], "success")
+        self.assertEqual(checkpoint["symbol_status"]["META"]["status"], "missing")
+
+    def test_coverage_report_counts_symbol_status(self):
+        from scripts.data_download.download_us_daily import build_coverage_report
+
+        checkpoint = {
+            "symbol_status": {
+                "AAPL": {"status": "success"},
+                "MSFT": {"status": "success"},
+                "META": {"status": "missing"},
+                "ZZZZ": {"status": "failed"},
+            }
+        }
+
+        report = build_coverage_report(checkpoint, requested_symbols=["AAPL", "MSFT", "META", "ZZZZ"])
+
+        self.assertEqual(report["requested_symbols"], 4)
+        self.assertEqual(report["success_symbols"], 2)
+        self.assertEqual(report["missing_symbols"], 1)
+        self.assertEqual(report["failed_symbols"], 1)
+
+
+class UniverseUtilityTest(unittest.TestCase):
+    def test_parse_nasdaq_trader_rows_filters_test_and_non_tradable_entries(self):
+        from scripts.data_download.build_us_universe import parse_nasdaq_trader_rows
+
+        rows = [
+            {
+                "Symbol": "AAPL",
+                "Test Issue": "N",
+                "ETF": "N",
+                "Round Lot Size": "100",
+                "Financial Status": "N",
+            },
+            {
+                "Symbol": "QQQ",
+                "Test Issue": "N",
+                "ETF": "Y",
+                "Round Lot Size": "100",
+                "Financial Status": "N",
+            },
+            {
+                "Symbol": "ZVZZT",
+                "Test Issue": "Y",
+                "ETF": "N",
+                "Round Lot Size": "100",
+                "Financial Status": "N",
+            },
+            {
+                "Symbol": "ODD",
+                "Test Issue": "N",
+                "ETF": "N",
+                "Round Lot Size": "0",
+                "Financial Status": "N",
+            },
+        ]
+
+        report = parse_nasdaq_trader_rows(rows)
+
+        self.assertEqual(report["symbols"], ["AAPL", "QQQ"])
+        self.assertEqual(report["counts"]["kept"], 2)
+        self.assertEqual(report["counts"]["filtered"], 2)
+
 
 class ValidationTest(unittest.TestCase):
     def test_validates_required_columns_duplicates_and_price_ranges(self):

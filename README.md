@@ -89,6 +89,17 @@ python3 scripts/data_download/download_us_daily.py \
   --batch-size 80
 ```
 
+Build a larger US symbol universe first:
+
+```bash
+python3 scripts/data_download/build_us_universe.py
+python3 scripts/data_download/download_us_daily.py \
+  --symbols-file data/universe/us_all.txt \
+  --start 2010-01-01 \
+  --end 2026-05-20 \
+  --batch-size 50
+```
+
 Daily bars are written as year-partitioned parquet files:
 
 ```text
@@ -104,6 +115,7 @@ python3 scripts/data_utils/validate_us_data.py
 ```
 
 For larger universes, tune `--batch-size` and `--threads`. A practical starting point is `--batch-size 50` to `100` with yfinance threading enabled. The checkpoint file lets you rerun interrupted jobs without reprocessing successful batches.
+The checkpoint now also records per-symbol status and a coverage summary so you can see how many requested symbols were downloaded, missing, failed, or still unknown.
 
 ## Verification
 

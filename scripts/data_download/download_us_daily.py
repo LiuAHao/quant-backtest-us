@@ -117,8 +117,12 @@ def write_partitioned_daily_bars(frame: pd.DataFrame, output_dir: Path) -> dict[
 
 def load_checkpoint(path: Path) -> dict[str, object]:
     if not path.exists():
-        return {"batches": [], "failed_symbols": []}
-    return json.loads(path.read_text(encoding="utf-8"))
+        return {"batches": [], "failed_symbols": [], "symbol_status": {}}
+    checkpoint = json.loads(path.read_text(encoding="utf-8"))
+    checkpoint.setdefault("batches", [])
+    checkpoint.setdefault("failed_symbols", [])
+    checkpoint.setdefault("symbol_status", {})
+    return checkpoint
 
 
 def save_checkpoint(path: Path, checkpoint: dict[str, object]) -> None:
@@ -126,6 +130,39 @@ def save_checkpoint(path: Path, checkpoint: dict[str, object]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(checkpoint, indent=2, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
+
+
+def update_symbol_status(
+    checkpoint: dict[str, object],
+    *,
+    success_symbols: Iterable[str] = (),
+    missing_symbols: Iterable[str] = (),
+    failed_symbols: Iterable[str] = (),
+    completed_at: str,
+) -> None:
+    status_map = checkpoint.setdefault("symbol_status", {})
+    for symbol in normalize_symbols(success_symbols):
+        status_map[symbol] = {"status": "success", "completed_at": completed_at}
+    for symbol in normalize_symbols(missing_symbols):
+        status_map[symbol] = {"status": "missing", "completed_at": completed_at}
+    for symbol in normalize_symbols(failed_symbols):
+        status_map[symbol] = {"status": "failed", "completed_at": completed_at}
+
+
+def build_coverage_report(checkpoint: dict[str, object], requested_symbols: Iterable[str]) -> dict[str, int]:
+    requested = normalize_symbols(requested_symbols)
+    status_map = checkpoint.get("symbol_status", {})
+    counts = {"success": 0, "missing": 0, "failed": 0, "unknown": 0}
+    for symbol in requested:
+        status = status_map.get(symbol, {}).get("status", "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return {
+        "requested_symbols": len(requested),
+        "success_symbols": counts.get("success", 0),
+        "missing_symbols": counts.get("missing", 0),
+        "failed_symbols": counts.get("failed", 0),
+        "unknown_symbols": counts.get("unknown", 0),
+    }
 
 
 def download_batches(
@@ -166,6 +203,13 @@ def download_batches(
                 missing_symbols = [symbol for symbol in batch if symbol not in set(downloaded_symbols)]
                 failed_symbols.difference_update(downloaded_symbols)
                 failed_symbols.update(missing_symbols)
+                completed_at = utc_now_iso()
+                update_symbol_status(
+                    checkpoint,
+                    success_symbols=downloaded_symbols,
+                    missing_symbols=missing_symbols,
+                    completed_at=completed_at,
+                )
                 checkpoint.setdefault("batches", []).append(
                     {
                         "key": key,
@@ -176,7 +220,7 @@ def download_batches(
                         "downloaded_symbols": downloaded_symbols,
                         "missing_symbols": missing_symbols,
                         "partitions": write_counts,
-                        "completed_at": utc_now_iso(),
+                        "completed_at": completed_at,
                     }
                 )
                 checkpoint["failed_symbols"] = sorted(failed_symbols)
@@ -194,6 +238,12 @@ def download_batches(
                     time.sleep(retry_sleep)
                 else:
                     failed_symbols.update(batch)
+                    completed_at = utc_now_iso()
+                    update_symbol_status(
+                        checkpoint,
+                        failed_symbols=batch,
+                        completed_at=completed_at,
+                    )
                     checkpoint.setdefault("batches", []).append(
                         {
                             "key": key,
@@ -201,13 +251,14 @@ def download_batches(
                             "batch_index": index,
                             "status": "failed",
                             "error": last_error,
-                            "completed_at": utc_now_iso(),
+                            "completed_at": completed_at,
                         }
                     )
                     checkpoint["failed_symbols"] = sorted(failed_symbols)
                     save_checkpoint(checkpoint_path, checkpoint)
 
     checkpoint["failed_symbols"] = sorted(failed_symbols)
+    checkpoint["coverage_report"] = build_coverage_report(checkpoint, symbols)
     checkpoint["last_run"] = {
         "start": start,
         "end": end,
@@ -273,11 +324,21 @@ def main() -> int:
             f"{'' if skipped_batches == 1 else 'es'} from checkpoint at {args.checkpoint}."
         )
     else:
+        coverage = checkpoint.get("coverage_report", {})
         print(
             f"Downloaded {last_run['rows_downloaded_this_run']} rows into {last_run['output_dir']} "
             f"with {failed_symbol_count} failed symbols and {skipped_batches} skipped batch"
             f"{'' if skipped_batches == 1 else 'es'}."
         )
+        if coverage:
+            print(
+                "Coverage: "
+                f"{coverage['success_symbols']} success, "
+                f"{coverage['missing_symbols']} missing, "
+                f"{coverage['failed_symbols']} failed, "
+                f"{coverage['unknown_symbols']} unknown "
+                f"out of {coverage['requested_symbols']} requested symbols."
+            )
     return 0
 
 

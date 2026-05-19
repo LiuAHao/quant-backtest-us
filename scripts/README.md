@@ -18,3 +18,11 @@ python3 scripts/data_utils/validate_us_data.py
 ```
 
 The downloader batches symbols, writes year-partitioned parquet files, and stores a resumable checkpoint at `data/meta/download_us_daily_checkpoint.json`.
+
+To build a broader universe file:
+
+```bash
+python3 scripts/data_download/build_us_universe.py
+```
+
+That writes `data/universe/us_all.txt` using NASDAQ Trader symbol directories, filtered to remove test issues and zero round-lot entries.

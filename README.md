@@ -15,8 +15,8 @@ This repository was initialized from `quant-backtest`, then cleaned for a US-mar
 
 The first usable milestone should be a minimal US daily-bar research loop:
 
-- Data source adapter for yfinance, Polygon, Tiingo, Alpaca, Nasdaq Data Link, or another US source.
-- Local daily-bar storage under `data/`.
+- Data source adapter for yfinance first, with room for Polygon, Tiingo, Alpaca, Nasdaq Data Link, or another US source.
+- Local daily-bar storage under `data/us_daily_bar/`.
 - Instrument and calendar loaders for US equities and ETFs.
 - A small backtest engine that can run simple AAPL/MSFT/NVDA/SPY experiments.
 - Strategy and report formats designed around US-market concepts instead of A-share fields.
@@ -64,6 +64,46 @@ scripts/          Placeholder for future data and maintenance scripts
 tests/            Placeholder for future tests
 docs/             Placeholder for future design and usage docs
 ```
+
+## US Daily Data
+
+The first data source is yfinance. It is useful for quickly prototyping a large local daily-bar store, but the code keeps yfinance behind an adapter so a paid provider can replace it later.
+
+Download a small universe:
+
+```bash
+python3 scripts/data_download/download_us_daily.py \
+  --symbols AAPL MSFT NVDA SPY QQQ \
+  --start 2015-01-01 \
+  --end 2026-05-20 \
+  --batch-size 80
+```
+
+Download from a symbols file:
+
+```bash
+python3 scripts/data_download/download_us_daily.py \
+  --symbols-file data/universe/us_core.txt \
+  --start 2010-01-01 \
+  --end 2026-05-20 \
+  --batch-size 80
+```
+
+Daily bars are written as year-partitioned parquet files:
+
+```text
+data/us_daily_bar/
+  year=2024/us_daily_bar.parquet
+  year=2025/us_daily_bar.parquet
+```
+
+Validate the local store:
+
+```bash
+python3 scripts/data_utils/validate_us_data.py
+```
+
+For larger universes, tune `--batch-size` and `--threads`. A practical starting point is `--batch-size 50` to `100` with yfinance threading enabled. The checkpoint file lets you rerun interrupted jobs without reprocessing successful batches.
 
 ## Verification
 

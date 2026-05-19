@@ -48,6 +48,8 @@ logs/*
 # Data files (large binary files)
 data/*
 !data/.gitkeep
+!data/universe/
+!data/universe/*.txt
 
 # Backtest reports
 backend/storage/strategies/reports/

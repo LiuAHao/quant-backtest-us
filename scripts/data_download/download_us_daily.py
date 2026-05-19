@@ -37,6 +37,11 @@ def normalize_symbols(symbols: Iterable[str]) -> list[str]:
 
 
 def read_symbols_file(path: Path) -> list[str]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Symbols file not found: {path}. Run scripts/data_download/build_us_universe.py first "
+            "or provide an existing symbols file."
+        )
     symbols: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         clean = line.split("#", 1)[0].replace(",", " ").strip()

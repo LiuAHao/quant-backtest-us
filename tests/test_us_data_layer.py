@@ -60,6 +60,16 @@ class YFinanceNormalizationTest(unittest.TestCase):
 
 
 class DownloadUtilityTest(unittest.TestCase):
+    def test_read_symbols_file_raises_clear_error_for_missing_file(self):
+        from scripts.data_download.download_us_daily import read_symbols_file
+
+        missing = Path("/tmp/definitely_missing_us_all.txt")
+        if missing.exists():
+            missing.unlink()
+
+        with self.assertRaisesRegex(FileNotFoundError, "Symbols file not found"):
+            read_symbols_file(missing)
+
     def test_batches_symbols_without_empty_batches(self):
         from scripts.data_download.download_us_daily import batch_symbols
 

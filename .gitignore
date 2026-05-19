@@ -1,0 +1,107 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+logs/
+!logs/.gitkeep
+
+# Data files (large binary files)
+data/
+!data/.gitkeep
+
+# Backtest reports
+backend/storage/strategies/reports/
+!backend/storage/strategies/reports/.gitkeep
+strategies/reports/
+!strategies/reports/.gitkeep
+
+# Event analysis local runtime artifacts
+backend/storage/event_analyses/generated/*.py
+!backend/storage/event_analyses/generated/.gitkeep
+backend/storage/event_analyses/results/*.json
+!backend/storage/event_analyses/results/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Qoder
+.qoder/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+.test-tmp/
+.test-tmp-validation/
+.tmp/
+
+# Internal workspace notes
+.hermes/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.npm-cache/
+.playwright-mcp/
+web/data/
+
+# Backend local runtime state
+backend/storage/*.db
+backend/storage/*.db-*
+backend/storage/strategies/*.py
+!backend/storage/strategies/__init__.py
+!backend/storage/strategies/templates.py
+
+# Download progress files
+.download_full_progress.json
+
+# Agent simulation/experiment scripts
+scripts/agent_simulation/
+
+# Misc
+*.rar
+*.zip
+*.7z
+*.tar.gz

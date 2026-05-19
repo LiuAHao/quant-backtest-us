@@ -97,7 +97,8 @@ python3 scripts/data_download/download_us_daily.py \
   --symbols-file data/universe/us_all.txt \
   --start 2010-01-01 \
   --end 2026-05-20 \
-  --batch-size 50
+  --batch-size 50 \
+  --fallback-to-single-symbol
 ```
 
 Daily bars are written as year-partitioned parquet files:
@@ -116,6 +117,27 @@ python3 scripts/data_utils/validate_us_data.py
 
 For larger universes, tune `--batch-size` and `--threads`. A practical starting point is `--batch-size 50` to `100` with yfinance threading enabled. The checkpoint file lets you rerun interrupted jobs without reprocessing successful batches.
 The checkpoint now also records per-symbol status and a coverage summary so you can see how many requested symbols were downloaded, missing, failed, or still unknown.
+
+For unattended runs, the downloader also writes:
+
+```text
+data/meta/download_us_daily_checkpoint.json
+data/meta/download_us_daily_report.json
+data/meta/success_symbols.txt
+data/meta/missing_symbols.txt
+data/meta/failed_symbols.txt
+```
+
+If a batch fails and `--fallback-to-single-symbol` is enabled, the downloader retries the symbols in that batch one by one. To rerun only the unresolved names later:
+
+```bash
+python3 scripts/data_download/download_us_daily.py \
+  --retry-failed-only \
+  --start 2010-01-01 \
+  --end 2026-05-20 \
+  --batch-size 20 \
+  --fallback-to-single-symbol
+```
 
 ## Verification
 

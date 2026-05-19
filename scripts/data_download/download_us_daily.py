@@ -122,6 +122,31 @@ def load_checkpoint(path: Path) -> dict[str, object]:
     checkpoint.setdefault("batches", [])
     checkpoint.setdefault("failed_symbols", [])
     checkpoint.setdefault("symbol_status", {})
+    status_map = checkpoint["symbol_status"]
+    if not status_map:
+        for batch in checkpoint["batches"]:
+            if not isinstance(batch, dict):
+                continue
+            completed_at = batch.get("completed_at", "")
+            downloaded = batch.get("downloaded_symbols", [])
+            missing = batch.get("missing_symbols", [])
+            update_symbol_status(
+                checkpoint,
+                success_symbols=downloaded,
+                missing_symbols=missing,
+                completed_at=completed_at,
+            )
+        update_symbol_status(
+            checkpoint,
+            failed_symbols=checkpoint.get("failed_symbols", []),
+            completed_at="",
+        )
+    requested = []
+    for batch in checkpoint["batches"]:
+        if isinstance(batch, dict):
+            requested.extend(batch.get("symbols", []))
+    if requested:
+        checkpoint["coverage_report"] = build_coverage_report(checkpoint, requested)
     return checkpoint
 
 
@@ -165,6 +190,86 @@ def build_coverage_report(checkpoint: dict[str, object], requested_symbols: Iter
     }
 
 
+def resolve_retry_symbols(checkpoint: dict[str, object]) -> list[str]:
+    status_map = checkpoint.get("symbol_status", {})
+    symbols = [
+        symbol
+        for symbol, payload in status_map.items()
+        if payload.get("status") in {"missing", "failed"}
+    ]
+    return normalize_symbols(symbols)
+
+
+def write_symbol_list(path: Path, symbols: Iterable[str]) -> None:
+    clean = normalize_symbols(symbols)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = "\n".join(clean)
+    if clean:
+        text += "\n"
+    path.write_text(text, encoding="utf-8")
+
+
+def write_status_files(meta_dir: Path, checkpoint: dict[str, object]) -> None:
+    status_map = checkpoint.get("symbol_status", {})
+    success = [symbol for symbol, payload in status_map.items() if payload.get("status") == "success"]
+    missing = [symbol for symbol, payload in status_map.items() if payload.get("status") == "missing"]
+    failed = [symbol for symbol, payload in status_map.items() if payload.get("status") == "failed"]
+    write_symbol_list(meta_dir / "success_symbols.txt", success)
+    write_symbol_list(meta_dir / "missing_symbols.txt", missing)
+    write_symbol_list(meta_dir / "failed_symbols.txt", failed)
+    summary_path = meta_dir / "download_us_daily_report.json"
+    summary = {
+        "coverage_report": checkpoint.get("coverage_report", {}),
+        "last_run": checkpoint.get("last_run", {}),
+        "failed_symbols": normalize_symbols(failed),
+        "missing_symbols": normalize_symbols(missing),
+        "success_symbols": normalize_symbols(success),
+    }
+    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _run_single_symbol_fallback(
+    *,
+    batch: list[str],
+    start: str,
+    end: str | None,
+    output_dir: Path,
+    checkpoint: dict[str, object],
+    failed_symbols: set[str],
+    threads: bool | int,
+) -> int:
+    fallback_rows = 0
+    for symbol in batch:
+        completed_at = utc_now_iso()
+        try:
+            rows = fetch_daily_bars([symbol], start=start, end=end, batch_threads=threads)
+            downloaded_symbols = extract_downloaded_symbols(rows)
+            if downloaded_symbols:
+                write_partitioned_daily_bars(rows, output_dir)
+                fallback_rows += len(rows)
+                failed_symbols.discard(symbol)
+                update_symbol_status(
+                    checkpoint,
+                    success_symbols=downloaded_symbols,
+                    completed_at=completed_at,
+                )
+            else:
+                failed_symbols.add(symbol)
+                update_symbol_status(
+                    checkpoint,
+                    missing_symbols=[symbol],
+                    completed_at=completed_at,
+                )
+        except Exception:  # noqa: BLE001 - fallback should keep scanning remaining symbols.
+            failed_symbols.add(symbol)
+            update_symbol_status(
+                checkpoint,
+                failed_symbols=[symbol],
+                completed_at=completed_at,
+            )
+    return fallback_rows
+
+
 def download_batches(
     *,
     symbols: Iterable[str],
@@ -176,6 +281,7 @@ def download_batches(
     retries: int = 2,
     retry_sleep: float = 2.0,
     threads: bool | int = True,
+    fallback_to_single_symbol: bool = False,
 ) -> dict[str, object]:
     checkpoint = load_checkpoint(checkpoint_path)
     completed_keys = {
@@ -237,13 +343,26 @@ def download_batches(
                 if attempt <= retries:
                     time.sleep(retry_sleep)
                 else:
-                    failed_symbols.update(batch)
                     completed_at = utc_now_iso()
-                    update_symbol_status(
-                        checkpoint,
-                        failed_symbols=batch,
-                        completed_at=completed_at,
-                    )
+                    fallback_rows = 0
+                    if fallback_to_single_symbol and len(batch) > 1:
+                        fallback_rows = _run_single_symbol_fallback(
+                            batch=batch,
+                            start=start,
+                            end=end,
+                            output_dir=output_dir,
+                            checkpoint=checkpoint,
+                            failed_symbols=failed_symbols,
+                            threads=threads,
+                        )
+                        total_rows += fallback_rows
+                    else:
+                        failed_symbols.update(batch)
+                        update_symbol_status(
+                            checkpoint,
+                            failed_symbols=batch,
+                            completed_at=completed_at,
+                        )
                     checkpoint.setdefault("batches", []).append(
                         {
                             "key": key,
@@ -251,6 +370,7 @@ def download_batches(
                             "batch_index": index,
                             "status": "failed",
                             "error": last_error,
+                            "fallback_rows": fallback_rows,
                             "completed_at": completed_at,
                         }
                     )
@@ -284,6 +404,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retries", type=int, default=2)
     parser.add_argument("--retry-sleep", type=float, default=2.0)
     parser.add_argument("--threads", default="true", help="true, false, or an integer thread count for yfinance")
+    parser.add_argument("--retry-failed-only", action="store_true", help="Only retry symbols currently marked missing or failed in the checkpoint")
+    parser.add_argument("--fallback-to-single-symbol", action="store_true", help="When a batch fails, retry its symbols one by one")
     return parser.parse_args()
 
 
@@ -298,11 +420,14 @@ def parse_threads(value: str) -> bool | int:
 
 def main() -> int:
     args = parse_args()
+    checkpoint = load_checkpoint(args.checkpoint)
     symbols = normalize_symbols(args.symbols)
     if args.symbols_file:
         symbols = normalize_symbols([*symbols, *read_symbols_file(args.symbols_file)])
+    if args.retry_failed_only:
+        symbols = resolve_retry_symbols(checkpoint)
     if not symbols:
-        raise SystemExit("No symbols provided. Use --symbols or --symbols-file.")
+        raise SystemExit("No symbols provided. Use --symbols, --symbols-file, or --retry-failed-only.")
 
     checkpoint = download_batches(
         symbols=symbols,
@@ -314,7 +439,9 @@ def main() -> int:
         retries=args.retries,
         retry_sleep=args.retry_sleep,
         threads=parse_threads(args.threads),
+        fallback_to_single_symbol=args.fallback_to_single_symbol,
     )
+    write_status_files(args.checkpoint.parent, checkpoint)
     last_run = checkpoint["last_run"]
     failed_symbol_count = len(checkpoint.get("failed_symbols", []))
     skipped_batches = int(last_run.get("skipped_batches", 0))

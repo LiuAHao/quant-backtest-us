@@ -323,6 +323,175 @@ class DownloadUtilityTest(unittest.TestCase):
         self.assertEqual(report["missing_symbols"], 1)
         self.assertEqual(report["failed_symbols"], 1)
 
+    def test_load_checkpoint_backfills_symbol_status_and_coverage_from_legacy_file(self):
+        from scripts.data_download.download_us_daily import load_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_path = Path(tmp) / "checkpoint.json"
+            checkpoint_path.write_text(
+                """
+                {
+                  "batches": [
+                    {
+                      "symbols": ["AAPL", "MSFT"],
+                      "status": "success",
+                      "downloaded_symbols": ["AAPL", "MSFT"],
+                      "missing_symbols": []
+                    },
+                    {
+                      "symbols": ["META"],
+                      "status": "partial",
+                      "downloaded_symbols": [],
+                      "missing_symbols": ["META"]
+                    }
+                  ],
+                  "failed_symbols": ["TSLA"]
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            checkpoint = load_checkpoint(checkpoint_path)
+
+        self.assertEqual(checkpoint["symbol_status"]["AAPL"]["status"], "success")
+        self.assertEqual(checkpoint["symbol_status"]["META"]["status"], "missing")
+        self.assertEqual(checkpoint["symbol_status"]["TSLA"]["status"], "failed")
+        self.assertEqual(checkpoint["coverage_report"]["requested_symbols"], 3)
+
+    def test_failed_batch_falls_back_to_single_symbol_retries(self):
+        from scripts.data_download.download_us_daily import download_batches, load_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_path = root / "meta" / "checkpoint.json"
+
+            def fake_fetch(symbols, **_kwargs):
+                if len(symbols) > 1:
+                    raise RuntimeError("batch failed")
+                symbol = symbols[0]
+                if symbol == "META":
+                    raise RuntimeError("single failed")
+                return pd.DataFrame(
+                    {
+                        "symbol": [symbol],
+                        "date": ["2024-01-02"],
+                        "open": [10.0],
+                        "high": [11.0],
+                        "low": [9.0],
+                        "close": [10.5],
+                        "adj_close": [10.5],
+                        "volume": [100],
+                        "dividends": [0.0],
+                        "stock_splits": [0.0],
+                        "amount": [1050.0],
+                        "source": ["yfinance"],
+                        "updated_at": ["2026-05-20T00:00:00Z"],
+                    }
+                )
+
+            with patch("scripts.data_download.download_us_daily.fetch_daily_bars", side_effect=fake_fetch):
+                download_batches(
+                    symbols=["AAPL", "META"],
+                    start="2024-01-02",
+                    end="2024-01-10",
+                    output_dir=root / "bars",
+                    checkpoint_path=checkpoint_path,
+                    batch_size=2,
+                    retries=0,
+                    fallback_to_single_symbol=True,
+                )
+
+            checkpoint = load_checkpoint(checkpoint_path)
+
+        self.assertEqual(checkpoint["symbol_status"]["AAPL"]["status"], "success")
+        self.assertEqual(checkpoint["symbol_status"]["META"]["status"], "failed")
+        self.assertEqual(checkpoint["failed_symbols"], ["META"])
+
+    def test_retry_failed_only_uses_checkpoint_failed_and_missing_symbols(self):
+        from scripts.data_download.download_us_daily import resolve_retry_symbols
+
+        checkpoint = {
+            "symbol_status": {
+                "AAPL": {"status": "success"},
+                "META": {"status": "missing"},
+                "TSLA": {"status": "failed"},
+                "MSFT": {"status": "unknown"},
+            }
+        }
+
+        symbols = resolve_retry_symbols(checkpoint)
+
+        self.assertEqual(symbols, ["META", "TSLA"])
+
+    def test_write_status_files_exports_failed_missing_and_success_symbols(self):
+        from scripts.data_download.download_us_daily import write_status_files
+
+        checkpoint = {
+            "symbol_status": {
+                "AAPL": {"status": "success"},
+                "META": {"status": "missing"},
+                "TSLA": {"status": "failed"},
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            meta_dir = Path(tmp)
+            write_status_files(meta_dir, checkpoint)
+
+            failed = (meta_dir / "failed_symbols.txt").read_text(encoding="utf-8").splitlines()
+            missing = (meta_dir / "missing_symbols.txt").read_text(encoding="utf-8").splitlines()
+            success = (meta_dir / "success_symbols.txt").read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(failed, ["TSLA"])
+        self.assertEqual(missing, ["META"])
+        self.assertEqual(success, ["AAPL"])
+
+    def test_download_batches_writes_status_files_via_main_flow_helpers(self):
+        from scripts.data_download.download_us_daily import download_batches, load_checkpoint, write_status_files
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_path = root / "meta" / "checkpoint.json"
+            rows = pd.DataFrame(
+                {
+                    "symbol": ["AAPL"],
+                    "date": ["2024-01-02"],
+                    "open": [10.0],
+                    "high": [11.0],
+                    "low": [9.0],
+                    "close": [10.5],
+                    "adj_close": [10.5],
+                    "volume": [100],
+                    "dividends": [0.0],
+                    "stock_splits": [0.0],
+                    "amount": [1050.0],
+                    "source": ["yfinance"],
+                    "updated_at": ["2026-05-20T00:00:00Z"],
+                }
+            )
+
+            with patch("scripts.data_download.download_us_daily.fetch_daily_bars", return_value=rows):
+                checkpoint = download_batches(
+                    symbols=["AAPL", "META"],
+                    start="2024-01-02",
+                    end="2024-01-10",
+                    output_dir=root / "bars",
+                    checkpoint_path=checkpoint_path,
+                    batch_size=2,
+                    retries=0,
+                )
+            write_status_files(checkpoint_path.parent, checkpoint)
+            saved = load_checkpoint(checkpoint_path)
+
+            failed = (checkpoint_path.parent / "failed_symbols.txt").read_text(encoding="utf-8").splitlines()
+            missing = (checkpoint_path.parent / "missing_symbols.txt").read_text(encoding="utf-8").splitlines()
+            summary = (checkpoint_path.parent / "download_us_daily_report.json").read_text(encoding="utf-8")
+
+        self.assertEqual(saved["coverage_report"]["requested_symbols"], 2)
+        self.assertEqual(failed, [])
+        self.assertEqual(missing, ["META"])
+        self.assertIn('"missing_symbols"', summary)
+
 
 class UniverseUtilityTest(unittest.TestCase):
     def test_parse_nasdaq_trader_rows_filters_test_and_non_tradable_entries(self):

@@ -19,6 +19,7 @@ from scripts.data_source.data_source_yfinance import CANONICAL_COLUMNS, fetch_da
 
 
 DEFAULT_BATCH_SIZE = 80
+UNSUPPORTED_SUFFIXES = (".U", ".R", ".WS", ".W", ".RT")
 
 
 def utc_now_iso() -> str:
@@ -34,6 +35,36 @@ def normalize_symbols(symbols: Iterable[str]) -> list[str]:
             seen.add(symbol)
             clean.append(symbol)
     return clean
+
+
+def normalize_download_symbol(symbol: str) -> tuple[str | None, str | None]:
+    clean = symbol.strip().upper()
+    if not clean:
+        return None, "empty"
+    if "$" in clean:
+        return None, "preferred_or_special_share"
+    if clean.endswith(UNSUPPORTED_SUFFIXES):
+        return None, "unsupported_suffix"
+    if "." in clean:
+        left, right = clean.rsplit(".", 1)
+        if len(right) == 1 and right.isalpha():
+            return f"{left}-{right}", None
+    return clean, None
+
+
+def prepare_download_symbols(symbols: Iterable[str]) -> tuple[list[str], list[str]]:
+    prepared: list[str] = []
+    unsupported: list[str] = []
+    seen: set[str] = set()
+    for original in normalize_symbols(symbols):
+        normalized, reason = normalize_download_symbol(original)
+        if normalized:
+            if normalized not in seen:
+                seen.add(normalized)
+                prepared.append(normalized)
+        else:
+            unsupported.append(original)
+    return prepared, unsupported
 
 
 def read_symbols_file(path: Path) -> list[str]:
@@ -219,9 +250,11 @@ def write_status_files(meta_dir: Path, checkpoint: dict[str, object]) -> None:
     success = [symbol for symbol, payload in status_map.items() if payload.get("status") == "success"]
     missing = [symbol for symbol, payload in status_map.items() if payload.get("status") == "missing"]
     failed = [symbol for symbol, payload in status_map.items() if payload.get("status") == "failed"]
+    unsupported = [symbol for symbol, payload in status_map.items() if payload.get("status") == "unsupported"]
     write_symbol_list(meta_dir / "success_symbols.txt", success)
     write_symbol_list(meta_dir / "missing_symbols.txt", missing)
     write_symbol_list(meta_dir / "failed_symbols.txt", failed)
+    write_symbol_list(meta_dir / "unsupported_symbols.txt", unsupported)
     summary_path = meta_dir / "download_us_daily_report.json"
     summary = {
         "coverage_report": checkpoint.get("coverage_report", {}),
@@ -229,6 +262,7 @@ def write_status_files(meta_dir: Path, checkpoint: dict[str, object]) -> None:
         "failed_symbols": normalize_symbols(failed),
         "missing_symbols": normalize_symbols(missing),
         "success_symbols": normalize_symbols(success),
+        "unsupported_symbols": normalize_symbols(unsupported),
     }
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -431,7 +465,17 @@ def main() -> int:
         symbols = normalize_symbols([*symbols, *read_symbols_file(args.symbols_file)])
     if args.retry_failed_only:
         symbols = resolve_retry_symbols(checkpoint)
-    if not symbols:
+    symbols, unsupported_symbols = prepare_download_symbols(symbols)
+    if unsupported_symbols:
+        update_symbol_status(
+            checkpoint,
+            completed_at=utc_now_iso(),
+        )
+        status_map = checkpoint.setdefault("symbol_status", {})
+        completed_at = utc_now_iso()
+        for symbol in unsupported_symbols:
+            status_map[symbol] = {"status": "unsupported", "completed_at": completed_at}
+    if not symbols and not unsupported_symbols:
         raise SystemExit("No symbols provided. Use --symbols, --symbols-file, or --retry-failed-only.")
 
     checkpoint = download_batches(
@@ -446,6 +490,11 @@ def main() -> int:
         threads=parse_threads(args.threads),
         fallback_to_single_symbol=args.fallback_to_single_symbol,
     )
+    if unsupported_symbols:
+        checkpoint["coverage_report"] = build_coverage_report(
+            checkpoint,
+            [*symbols, *unsupported_symbols],
+        )
     write_status_files(args.checkpoint.parent, checkpoint)
     last_run = checkpoint["last_run"]
     failed_symbol_count = len(checkpoint.get("failed_symbols", []))

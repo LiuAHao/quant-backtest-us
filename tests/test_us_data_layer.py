@@ -60,6 +60,16 @@ class YFinanceNormalizationTest(unittest.TestCase):
 
 
 class DownloadUtilityTest(unittest.TestCase):
+    def test_prepare_download_symbols_converts_share_classes_and_flags_unsupported(self):
+        from scripts.data_download.download_us_daily import prepare_download_symbols
+
+        prepared, unsupported = prepare_download_symbols(
+            ["AKO.A", "AKO.B", "AHL$E", "AIIA.U", "BRK-B", "MSFT"]
+        )
+
+        self.assertEqual(prepared, ["AKO-A", "AKO-B", "BRK-B", "MSFT"])
+        self.assertEqual(unsupported, ["AHL$E", "AIIA.U"])
+
     def test_read_symbols_file_raises_clear_error_for_missing_file(self):
         from scripts.data_download.download_us_daily import read_symbols_file
 
@@ -314,6 +324,25 @@ class DownloadUtilityTest(unittest.TestCase):
         self.assertEqual(checkpoint["symbol_status"]["AAPL"]["status"], "success")
         self.assertEqual(checkpoint["symbol_status"]["META"]["status"], "missing")
 
+    def test_unsupported_symbols_are_marked_without_download_attempt(self):
+        from scripts.data_download.download_us_daily import prepare_download_symbols, update_symbol_status
+
+        checkpoint = {"symbol_status": {}}
+        prepared, unsupported = prepare_download_symbols(["AHL$E", "AIIA.U", "MSFT"])
+        update_symbol_status(
+            checkpoint,
+            completed_at="2026-05-20T00:00:00Z",
+        )
+        for symbol in unsupported:
+            checkpoint["symbol_status"][symbol] = {
+                "status": "unsupported",
+                "completed_at": "2026-05-20T00:00:00Z",
+            }
+
+        self.assertEqual(prepared, ["MSFT"])
+        self.assertEqual(unsupported, ["AHL$E", "AIIA.U"])
+        self.assertEqual(checkpoint["symbol_status"]["AHL$E"]["status"], "unsupported")
+
     def test_coverage_report_counts_symbol_status(self):
         from scripts.data_download.download_us_daily import build_coverage_report
 
@@ -441,6 +470,7 @@ class DownloadUtilityTest(unittest.TestCase):
                 "AAPL": {"status": "success"},
                 "META": {"status": "missing"},
                 "TSLA": {"status": "failed"},
+                "AHL$E": {"status": "unsupported"},
             }
         }
 
@@ -451,10 +481,12 @@ class DownloadUtilityTest(unittest.TestCase):
             failed = (meta_dir / "failed_symbols.txt").read_text(encoding="utf-8").splitlines()
             missing = (meta_dir / "missing_symbols.txt").read_text(encoding="utf-8").splitlines()
             success = (meta_dir / "success_symbols.txt").read_text(encoding="utf-8").splitlines()
+            unsupported = (meta_dir / "unsupported_symbols.txt").read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(failed, ["TSLA"])
         self.assertEqual(missing, ["META"])
         self.assertEqual(success, ["AAPL"])
+        self.assertEqual(unsupported, ["AHL$E"])
 
     def test_download_batches_writes_status_files_via_main_flow_helpers(self):
         from scripts.data_download.download_us_daily import download_batches, load_checkpoint, write_status_files
@@ -541,6 +573,22 @@ class UniverseUtilityTest(unittest.TestCase):
         report = parse_nasdaq_trader_rows(rows)
 
         self.assertEqual(report["symbols"], ["AAPL", "QQQ"])
+        self.assertEqual(report["counts"]["kept"], 2)
+        self.assertEqual(report["counts"]["filtered"], 2)
+
+    def test_parse_nasdaq_trader_rows_normalizes_share_classes_and_skips_unsupported_suffixes(self):
+        from scripts.data_download.build_us_universe import parse_nasdaq_trader_rows
+
+        rows = [
+            {"ACT Symbol": "AKO.A", "Test Issue": "N", "Round Lot Size": "100"},
+            {"ACT Symbol": "AKO.B", "Test Issue": "N", "Round Lot Size": "100"},
+            {"ACT Symbol": "AIIA.U", "Test Issue": "N", "Round Lot Size": "100"},
+            {"ACT Symbol": "AHL$E", "Test Issue": "N", "Round Lot Size": "100"},
+        ]
+
+        report = parse_nasdaq_trader_rows(rows)
+
+        self.assertEqual(report["symbols"], ["AKO-A", "AKO-B"])
         self.assertEqual(report["counts"]["kept"], 2)
         self.assertEqual(report["counts"]["filtered"], 2)
 

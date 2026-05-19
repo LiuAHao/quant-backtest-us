@@ -12,6 +12,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import requests
 
+from scripts.data_download.download_us_daily import normalize_download_symbol
+
 
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 OTHER_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
@@ -30,7 +32,11 @@ def parse_nasdaq_trader_rows(rows: list[dict[str, str]]) -> dict[str, object]:
         if is_test_issue or round_lot == "0":
             filtered += 1
             continue
-        symbols.append(symbol)
+        normalized, reason = normalize_download_symbol(symbol)
+        if not normalized:
+            filtered += 1
+            continue
+        symbols.append(normalized)
     deduped = []
     seen = set()
     for symbol in symbols:

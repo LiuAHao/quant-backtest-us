@@ -38,6 +38,7 @@ class ValidationReport:
     missing_columns: list[str]
     duplicate_symbol_dates: int
     invalid_price_rows: int
+    invalid_adjusted_close_rows: int
     invalid_volume_rows: int
     null_required_values: int
 
@@ -63,22 +64,25 @@ def validate_daily_bars(frame: pd.DataFrame) -> ValidationReport:
             missing_columns=missing,
             duplicate_symbol_dates=0,
             invalid_price_rows=0,
+            invalid_adjusted_close_rows=0,
             invalid_volume_rows=0,
             null_required_values=0,
         )
 
     data = frame.copy()
     data["date"] = pd.to_datetime(data["date"], errors="coerce")
-    price_columns = ["open", "high", "low", "close", "adj_close"]
-    for column in price_columns + ["volume"]:
+    ohlc_columns = ["open", "high", "low", "close"]
+    numeric_columns = ohlc_columns + ["adj_close", "volume"]
+    for column in numeric_columns:
         data[column] = pd.to_numeric(data[column], errors="coerce")
 
     duplicate_count = int(data.duplicated(["symbol", "date"]).sum())
     invalid_price = (
         (data["high"] < data[["open", "low", "close"]].max(axis=1))
         | (data["low"] > data[["open", "high", "close"]].min(axis=1))
-        | (data[price_columns] < 0).any(axis=1)
+        | (data[ohlc_columns] < 0).any(axis=1)
     )
+    invalid_adjusted_close = data["adj_close"].isna() | (data["adj_close"] <= 0)
     invalid_volume = data["volume"].isna() | (data["volume"] < 0)
     null_required = int(data[list(REQUIRED_COLUMNS)].isna().sum().sum())
 
@@ -86,6 +90,7 @@ def validate_daily_bars(frame: pd.DataFrame) -> ValidationReport:
         not missing
         and duplicate_count == 0
         and int(invalid_price.sum()) == 0
+        and int(invalid_adjusted_close.sum()) == 0
         and int(invalid_volume.sum()) == 0
         and null_required == 0
     )
@@ -98,6 +103,7 @@ def validate_daily_bars(frame: pd.DataFrame) -> ValidationReport:
         missing_columns=missing,
         duplicate_symbol_dates=duplicate_count,
         invalid_price_rows=int(invalid_price.sum()),
+        invalid_adjusted_close_rows=int(invalid_adjusted_close.sum()),
         invalid_volume_rows=int(invalid_volume.sum()),
         null_required_values=null_required,
     )

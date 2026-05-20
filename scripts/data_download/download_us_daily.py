@@ -151,7 +151,7 @@ def write_partitioned_daily_bars(frame: pd.DataFrame, output_dir: Path) -> dict[
     return counts
 
 
-def load_checkpoint(path: Path) -> dict[str, object]:
+def load_checkpoint(path: Path, output_dir: Path | None = None) -> dict[str, object]:
     if not path.exists():
         return {"batches": [], "failed_symbols": [], "symbol_status": {}}
     checkpoint = json.loads(path.read_text(encoding="utf-8"))
@@ -177,12 +177,29 @@ def load_checkpoint(path: Path) -> dict[str, object]:
             failed_symbols=checkpoint.get("failed_symbols", []),
             completed_at="",
         )
+    if output_dir is not None and output_dir.exists():
+        parquet_symbols = set()
+        for file in sorted(output_dir.glob("year=*/*.parquet")):
+            frame = pd.read_parquet(file, columns=["symbol"])
+            parquet_symbols.update(frame["symbol"].dropna().astype(str).str.upper().tolist())
+        update_symbol_status(
+            checkpoint,
+            success_symbols=sorted(parquet_symbols),
+            completed_at="",
+        )
+        checkpoint["failed_symbols"] = [
+            symbol
+            for symbol in checkpoint.get("failed_symbols", [])
+            if checkpoint["symbol_status"].get(symbol, {}).get("status") != "success"
+        ]
     requested = []
     for batch in checkpoint["batches"]:
         if isinstance(batch, dict):
             requested.extend(batch.get("symbols", []))
     if requested:
         checkpoint["coverage_report"] = build_coverage_report(checkpoint, requested)
+    elif checkpoint.get("symbol_status"):
+        checkpoint["coverage_report"] = build_coverage_report(checkpoint, checkpoint["symbol_status"].keys())
     return checkpoint
 
 
@@ -205,8 +222,14 @@ def update_symbol_status(
     for symbol in normalize_symbols(success_symbols):
         status_map[symbol] = {"status": "success", "completed_at": completed_at}
     for symbol in normalize_symbols(missing_symbols):
+        existing = status_map.get(symbol, {})
+        if existing.get("status") == "success":
+            continue
         status_map[symbol] = {"status": "missing", "completed_at": completed_at}
     for symbol in normalize_symbols(failed_symbols):
+        existing = status_map.get(symbol, {})
+        if existing.get("status") == "success":
+            continue
         status_map[symbol] = {"status": "failed", "completed_at": completed_at}
 
 
@@ -322,7 +345,7 @@ def download_batches(
     threads: bool | int = True,
     fallback_to_single_symbol: bool = False,
 ) -> dict[str, object]:
-    checkpoint = load_checkpoint(checkpoint_path)
+    checkpoint = load_checkpoint(checkpoint_path, output_dir=output_dir)
     completed_keys = {
         item["key"]
         for item in checkpoint.get("batches", [])

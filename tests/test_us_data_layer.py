@@ -397,6 +397,71 @@ class DownloadUtilityTest(unittest.TestCase):
         self.assertEqual(checkpoint["symbol_status"]["TSLA"]["status"], "failed")
         self.assertEqual(checkpoint["coverage_report"]["requested_symbols"], 3)
 
+    def test_success_status_is_not_overwritten_by_later_missing(self):
+        from scripts.data_download.download_us_daily import update_symbol_status
+
+        checkpoint = {"symbol_status": {}}
+        update_symbol_status(
+            checkpoint,
+            success_symbols=["AVGO"],
+            completed_at="2026-05-20T00:00:00Z",
+        )
+        update_symbol_status(
+            checkpoint,
+            missing_symbols=["AVGO"],
+            completed_at="2026-05-21T00:00:00Z",
+        )
+
+        self.assertEqual(checkpoint["symbol_status"]["AVGO"]["status"], "success")
+
+    def test_load_checkpoint_backfills_success_from_existing_parquet(self):
+        from scripts.data_download.download_us_daily import load_checkpoint
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint_path = root / "checkpoint.json"
+            checkpoint_path.write_text(
+                """
+                {
+                  "batches": [
+                    {
+                      "symbols": ["AVGO"],
+                      "status": "partial",
+                      "downloaded_symbols": [],
+                      "missing_symbols": ["AVGO"]
+                    }
+                  ],
+                  "failed_symbols": ["AVGO"]
+                }
+                """,
+                encoding="utf-8",
+            )
+            bars_root = root / "bars"
+            partition = bars_root / "year=2024"
+            partition.mkdir(parents=True)
+            pd.DataFrame(
+                {
+                    "symbol": ["AVGO"],
+                    "date": ["2024-01-02"],
+                    "open": [10.0],
+                    "high": [11.0],
+                    "low": [9.0],
+                    "close": [10.5],
+                    "adj_close": [10.5],
+                    "volume": [100],
+                    "dividends": [0.0],
+                    "stock_splits": [0.0],
+                    "amount": [1050.0],
+                    "source": ["yfinance"],
+                    "updated_at": ["2026-05-20T00:00:00Z"],
+                }
+            ).to_parquet(partition / "us_daily_bar.parquet", index=False)
+
+            checkpoint = load_checkpoint(checkpoint_path, output_dir=bars_root)
+
+        self.assertEqual(checkpoint["symbol_status"]["AVGO"]["status"], "success")
+        self.assertEqual(checkpoint["failed_symbols"], [])
+
     def test_failed_batch_falls_back_to_single_symbol_retries(self):
         from scripts.data_download.download_us_daily import download_batches, load_checkpoint
 
@@ -618,6 +683,29 @@ class ValidationTest(unittest.TestCase):
         self.assertGreater(report.duplicate_symbol_dates, 0)
         self.assertGreater(report.invalid_price_rows, 0)
         self.assertGreater(report.invalid_volume_rows, 0)
+
+    def test_negative_adj_close_is_reported_separately_from_invalid_ohlc_rows(self):
+        from scripts.data_utils.validate_us_data import validate_daily_bars
+
+        frame = pd.DataFrame(
+            {
+                "symbol": ["SVA"],
+                "date": ["2010-01-04"],
+                "open": [6.39],
+                "high": [6.62],
+                "low": [6.39],
+                "close": [6.55],
+                "adj_close": [-49.13],
+                "volume": [935377],
+                "source": ["yfinance"],
+                "updated_at": ["2026-05-20T00:00:00Z"],
+            }
+        )
+
+        report = validate_daily_bars(frame)
+
+        self.assertEqual(report.invalid_price_rows, 0)
+        self.assertEqual(report.invalid_adjusted_close_rows, 1)
 
     def test_loads_partitioned_parquet_for_validation(self):
         from scripts.data_utils.validate_us_data import load_daily_bars

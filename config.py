@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     DATA_DIR: Path = Field(default_factory=lambda: PROJECT_ROOT / "data")
     LOG_DIR: Path = Field(default_factory=lambda: PROJECT_ROOT / "logs")
 
+    US_DAILY_BAR_RAW_DIR: Path = Field(default_factory=lambda: PROJECT_ROOT / "data" / "us_daily_bar_raw")
     US_DAILY_BAR_DIR: Path = Field(default_factory=lambda: PROJECT_ROOT / "data" / "us_daily_bar")
     US_ADJUSTMENTS_DIR: Path = Field(default_factory=lambda: PROJECT_ROOT / "data" / "us_adjustments")
     US_CALENDAR_DIR: Path = Field(default_factory=lambda: PROJECT_ROOT / "data" / "us_calendar")
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     TIINGO_API_KEY: Optional[str] = None
     ALPACA_API_KEY: Optional[str] = None
     ALPACA_API_SECRET: Optional[str] = None
+    ALPACA_API_BASE_URL: Optional[str] = None
     NASDAQ_DATA_LINK_API_KEY: Optional[str] = None
 
     AI_BASE_URL: Optional[str] = None
@@ -49,6 +51,7 @@ settings = Settings()
 for directory in [
     settings.DATA_DIR,
     settings.LOG_DIR,
+    settings.US_DAILY_BAR_RAW_DIR,
     settings.US_DAILY_BAR_DIR,
     settings.US_ADJUSTMENTS_DIR,
     settings.US_CALENDAR_DIR,

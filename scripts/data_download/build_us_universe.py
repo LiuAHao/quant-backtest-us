@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import requests
 
-from scripts.data_download.download_us_daily import normalize_download_symbol
+from scripts.data_utils.us_data_helpers import normalize_download_symbol
 
 
 NASDAQ_LISTED_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
@@ -79,17 +79,31 @@ def build_universe() -> dict[str, object]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a US equity and ETF symbol universe file.")
     parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "data" / "universe" / "us_all.txt")
+    parser.add_argument(
+        "--exclude-file",
+        type=Path,
+        help="Optional file with one symbol per line to exclude from the generated universe.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     report = build_universe()
+    symbols = report["symbols"]
+    excluded = set()
+    if args.exclude_file:
+        excluded = {
+            line.split("#", 1)[0].strip().upper()
+            for line in args.exclude_file.read_text(encoding="utf-8").splitlines()
+            if line.split("#", 1)[0].strip()
+        }
+        symbols = [symbol for symbol in symbols if symbol not in excluded]
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text("\n".join(report["symbols"]) + "\n", encoding="utf-8")
+    args.output.write_text("\n".join(symbols) + "\n", encoding="utf-8")
     print(
-        f"Wrote {report['counts']['combined']} symbols to {args.output} "
-        f"(NASDAQ {report['counts']['nasdaq_kept']}, other {report['counts']['other_kept']})."
+        f"Wrote {len(symbols)} symbols to {args.output} "
+        f"(NASDAQ {report['counts']['nasdaq_kept']}, other {report['counts']['other_kept']}, excluded {len(excluded)})."
     )
     return 0
 

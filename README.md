@@ -15,7 +15,7 @@ This repository was initialized from `quant-backtest`, then cleaned for a US-mar
 
 The first usable milestone should be a minimal US daily-bar research loop:
 
-- Data source adapter for yfinance first, with room for Polygon, Tiingo, Alpaca, Nasdaq Data Link, or another US source.
+- Data source adapter for Alpaca Basic first, with room for Polygon, Tiingo, or another US source later.
 - Local daily-bar storage under `data/us_daily_bar/`.
 - Instrument and calendar loaders for US equities and ETFs.
 - A small backtest engine that can run simple AAPL/MSFT/NVDA/SPY experiments.
@@ -67,46 +67,60 @@ docs/             Placeholder for future design and usage docs
 
 ## US Daily Data
 
-The first data source is yfinance. It is useful for quickly prototyping a large local daily-bar store, but the code keeps yfinance behind an adapter so a paid provider can replace it later.
+The first active data source is Alpaca Basic. The repository now stores:
 
-Download a small universe:
+- raw single-symbol parquet caches under `data/us_daily_bar_raw/`
+- a standardized year-partitioned research layer under `data/us_daily_bar/`
+- stage-level checkpoints and coverage reports under `data/meta/`
+
+Reset old local data before a fresh import:
 
 ```bash
-python3 scripts/data_download/download_us_daily.py \
-  --symbols AAPL MSFT NVDA SPY QQQ \
-  --start 2015-01-01 \
-  --end 2026-05-20 \
-  --batch-size 80
+python3 scripts/data_download/reset_us_data.py
 ```
 
-Download from a symbols file:
+Download the initial one-year core universe:
 
 ```bash
-python3 scripts/data_download/download_us_daily.py \
+python3 scripts/data_download/download_us_daily_staged.py \
+  --stage 1y \
   --symbols-file data/universe/us_core.txt \
-  --start 2010-01-01 \
-  --end 2026-05-20 \
-  --batch-size 80
+  --end 2025-05-20
 ```
 
-Build a larger US symbol universe first:
+Expand later to two, five, or ten years:
 
 ```bash
-python3 scripts/data_download/build_us_universe.py
-python3 scripts/data_download/download_us_daily.py \
-  --symbols-file data/universe/us_all.txt \
-  --start 2010-01-01 \
-  --end 2026-05-20 \
-  --batch-size 50 \
-  --fallback-to-single-symbol
+python3 scripts/data_download/download_us_daily_staged.py --stage 2y --symbols-file data/universe/us_core.txt --end 2025-05-20
+python3 scripts/data_download/download_us_daily_staged.py --stage 5y --symbols-file data/universe/us_core.txt --end 2025-05-20
+python3 scripts/data_download/download_us_daily_staged.py --stage 10y --symbols-file data/universe/us_core.txt --end 2025-05-20
 ```
 
-Daily bars are written as year-partitioned parquet files:
+The standardized research store remains year-partitioned:
 
 ```text
 data/us_daily_bar/
   year=2024/us_daily_bar.parquet
   year=2025/us_daily_bar.parquet
+```
+
+Raw symbol caches are kept separately:
+
+```text
+data/us_daily_bar_raw/
+  bucket=A/AAPL.parquet
+  bucket=M/MSFT.parquet
+```
+
+Reference data can be stored alongside daily bars:
+
+```bash
+python3 scripts/data_download/download_us_instruments.py
+python3 scripts/data_download/download_us_calendar.py --start 2024-05-20 --end 2026-05-20
+python3 scripts/data_download/download_us_corporate_actions.py --since 2026-01-01 --until 2026-05-21 --symbol AAPL,MSFT,SPY
+python3 scripts/data_utils/validate_us_reference_data.py --table instruments
+python3 scripts/data_utils/validate_us_reference_data.py --table calendar
+python3 scripts/data_utils/validate_us_reference_data.py --table corporate_actions
 ```
 
 Validate the local store:
@@ -115,28 +129,37 @@ Validate the local store:
 python3 scripts/data_utils/validate_us_data.py
 ```
 
-For larger universes, tune `--batch-size` and `--threads`. A practical starting point is `--batch-size 50` to `100` with yfinance threading enabled. The checkpoint file lets you rerun interrupted jobs without reprocessing successful batches.
-The checkpoint now also records per-symbol status and a coverage summary so you can see how many requested symbols were downloaded, missing, failed, or still unknown.
+The stage checkpoint records per-symbol status and a coverage summary so you can see how many requested symbols were downloaded, missing, failed, or still unknown.
 
 For unattended runs, the downloader also writes:
 
 ```text
-data/meta/download_us_daily_checkpoint.json
-data/meta/download_us_daily_report.json
-data/meta/success_symbols.txt
-data/meta/missing_symbols.txt
-data/meta/failed_symbols.txt
+data/meta/download_us_daily_1y_checkpoint.json
+data/meta/stage_1y/download_us_daily_report.json
+data/meta/stage_1y/success_symbols.txt
+data/meta/stage_1y/missing_symbols.txt
+data/meta/stage_1y/failed_symbols.txt
 ```
 
-If a batch fails and `--fallback-to-single-symbol` is enabled, the downloader retries the symbols in that batch one by one. To rerun only the unresolved names later:
+For Alpaca/IEX downloads, keep the broad and provider-clean universes separate:
+
+```text
+data/universe/us_all.txt
+data/universe/us_all_alpaca.txt
+data/universe/us_all_alpaca_exclude.txt
+```
+
+`us_all.txt` stays as the broad NASDAQ Trader universe. `us_all_alpaca.txt` is the
+provider-clean version rebuilt against the current exclude list.
+
+To rerun only unresolved symbols for a stage later:
 
 ```bash
-python3 scripts/data_download/download_us_daily.py \
+python3 scripts/data_download/download_us_daily_staged.py \
+  --stage 1y \
+  --symbols-file data/universe/us_core.txt \
   --retry-failed-only \
-  --start 2010-01-01 \
-  --end 2026-05-20 \
-  --batch-size 20 \
-  --fallback-to-single-symbol
+  --end 2025-05-20
 ```
 
 ## Verification

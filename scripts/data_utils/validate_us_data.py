@@ -41,6 +41,7 @@ class ValidationReport:
     invalid_adjusted_close_rows: int
     invalid_volume_rows: int
     null_required_values: int
+    unreadable_files: list[str]
 
 
 def load_daily_bars(root: Path = settings.US_DAILY_BAR_DIR) -> pd.DataFrame:
@@ -49,7 +50,19 @@ def load_daily_bars(root: Path = settings.US_DAILY_BAR_DIR) -> pd.DataFrame:
         files = sorted(root.glob("*.parquet"))
     if not files:
         return pd.DataFrame()
-    return pd.concat((pd.read_parquet(file) for file in files), ignore_index=True, sort=False)
+    frames: list[pd.DataFrame] = []
+    unreadable: list[str] = []
+    for file in files:
+        try:
+            frames.append(pd.read_parquet(file))
+        except Exception as exc:  # noqa: BLE001 - validation should surface bad files instead of crashing.
+            unreadable.append(f"{file}: {exc}")
+    if not frames:
+        frame = pd.DataFrame()
+    else:
+        frame = pd.concat(frames, ignore_index=True, sort=False)
+    frame.attrs["unreadable_files"] = unreadable
+    return frame
 
 
 def validate_daily_bars(frame: pd.DataFrame) -> ValidationReport:
@@ -67,6 +80,7 @@ def validate_daily_bars(frame: pd.DataFrame) -> ValidationReport:
             invalid_adjusted_close_rows=0,
             invalid_volume_rows=0,
             null_required_values=0,
+            unreadable_files=list(frame.attrs.get("unreadable_files", [])),
         )
 
     data = frame.copy()
@@ -93,6 +107,7 @@ def validate_daily_bars(frame: pd.DataFrame) -> ValidationReport:
         and int(invalid_adjusted_close.sum()) == 0
         and int(invalid_volume.sum()) == 0
         and null_required == 0
+        and not frame.attrs.get("unreadable_files", [])
     )
     return ValidationReport(
         ok=ok,
@@ -106,6 +121,7 @@ def validate_daily_bars(frame: pd.DataFrame) -> ValidationReport:
         invalid_adjusted_close_rows=int(invalid_adjusted_close.sum()),
         invalid_volume_rows=int(invalid_volume.sum()),
         null_required_values=null_required,
+        unreadable_files=list(frame.attrs.get("unreadable_files", [])),
     )
 
 

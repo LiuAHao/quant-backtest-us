@@ -19,6 +19,12 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 
 # Virtual environments
 venv/
@@ -50,6 +56,16 @@ data/*
 !data/.gitkeep
 !data/universe/
 !data/universe/*.txt
+
+# Local market data stores and generated reference tables
+data/meta/
+data/meta_*/
+data/us_daily_bar/
+data/us_daily_bar_raw/
+data/us_calendar/
+data/us_instruments/
+data/us_adjustments/
+data/us_fundamentals/
 
 # Backtest reports
 backend/storage/strategies/reports/
